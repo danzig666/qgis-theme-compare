@@ -1,0 +1,19 @@
+[general]
+name=Theme Compare
+qgisMinimumVersion=3.16
+qgisMaximumVersion=4.99
+supportsQt6=True
+description=Compare two map themes (or a theme and the current, unsaved map view) side by side.
+about=Shows which layers and groups are visible in one map theme but not in the other. Either side can be the current state of the Layers panel, so you don't have to save it as a theme first. Optionally also compares named styles, switched-on legend classes (categories/rules) and the expanded/collapsed state. Differences can be filtered, exported to CSV, copied to the clipboard, and copied from one theme to the other with a right click.
+version=1.0.0
+author=Danzig
+email=5346511+danzig666@users.noreply.github.com
+homepage=https://github.com/danzig666/qgis-theme-compare
+repository=https://github.com/danzig666/qgis-theme-compare
+tracker=https://github.com/danzig666/qgis-theme-compare/issues
+tags=map theme, theme, visibility, layers, compare, diff, legend, style
+category=Plugins
+icon=icon.svg
+experimental=False
+deprecated=False
+changelog=1.0.0 - First release
