@@ -187,15 +187,15 @@ def _compare(node, label_a, label_b):
 
     if a.visible != b.visible:
         side = label_a if a.visible else label_b
-        diffs.append((DIFF_VISIBILITY, "Visible only in {}".format(side)))
+        diffs.append((DIFF_VISIBILITY, "Only in {}".format(side)))
     elif a.checked != b.checked:
         diffs.append((DIFF_CHECKED, "Checked only in {} (hidden by group in both)".format(
             label_a if a.checked else label_b)))
 
     if node.kind == "layer" and a.checked and b.checked:
         if (a.style or b.style) and a.style != b.style:
-            diffs.append((DIFF_STYLE, "Style: '{}' vs '{}'".format(
-                a.style or "(not set)", b.style or "(not set)")))
+            diffs.append((DIFF_STYLE, "Style '{}' in {}, '{}' in {}".format(
+                a.style or "(not set)", label_a, b.style or "(not set)", label_b)))
         if a.legend is not None and b.legend is not None and a.legend != b.legend:
             only_a = [node.legend_labels.get(k, k) for k in a.legend - b.legend]
             only_b = [node.legend_labels.get(k, k) for k in b.legend - a.legend]
@@ -211,12 +211,20 @@ def _compare(node, label_a, label_b):
             what, label_a if a.expanded else label_b)))
 
 
-def compare_themes(project, root, model, key_a, key_b, label_a="A", label_b="B"):
+def display_name(theme_key):
+    """Human readable name of a theme key."""
+    return "current view" if theme_key == CURRENT_STATE else theme_key
+
+
+def compare_themes(project, root, model, key_a, key_b, label_a=None, label_b=None):
     """Compare two themes and return the root DiffNode (kind "root").
 
-    key_a / key_b are theme names or CURRENT_STATE.
+    key_a / key_b are theme names or CURRENT_STATE. label_a / label_b are the
+    names used in the difference texts (default: the theme names).
     Raises KeyError when a theme does not exist.
     """
+    label_a = label_a or display_name(key_a)
+    label_b = label_b or display_name(key_b)
     rec_a = theme_record(project, key_a, root, model)
     rec_b = theme_record(project, key_b, root, model)
     if rec_a is None:

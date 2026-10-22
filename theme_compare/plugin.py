@@ -1,10 +1,9 @@
 import os
 
-from qgis.PyQt.QtCore import Qt
 from qgis.PyQt.QtGui import QIcon
 from qgis.PyQt.QtWidgets import QAction
 
-from .compare_dock import ThemeCompareDock
+from .compare_dialog import ThemeCompareDialog
 
 PLUGIN_NAME = "Theme Compare"
 
@@ -13,7 +12,7 @@ class ThemeComparePlugin:
 
     def __init__(self, iface):
         self.iface = iface
-        self.dock = None
+        self.dialog = None
         self.action = None
 
     def initGui(self):
@@ -22,41 +21,38 @@ class ThemeComparePlugin:
         self.action.setObjectName("ThemeCompareAction")
         self.action.setToolTip("Compare the layer visibility (and more) of two map themes")
         self.action.setCheckable(True)
-        self.action.toggled.connect(self._toggle_dock)
+        self.action.toggled.connect(self._toggle_dialog)
         self.iface.addToolBarIcon(self.action)
         self.iface.addPluginToMenu(PLUGIN_NAME, self.action)
 
-    def _ensure_dock(self):
-        if self.dock is None:
-            self.dock = ThemeCompareDock(self.iface, self.iface.mainWindow())
-            self.iface.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.dock)
-            self.dock.visibilityChanged.connect(self._on_dock_visibility)
-        return self.dock
+    def _ensure_dialog(self):
+        if self.dialog is None:
+            self.dialog = ThemeCompareDialog(self.iface, self.iface.mainWindow())
+            self.dialog.finished.connect(self._on_dialog_closed)
+        return self.dialog
 
-    def _toggle_dock(self, checked):
+    def _toggle_dialog(self, checked):
         if checked:
-            dock = self._ensure_dock()
-            dock.show()
-            dock.raise_()
-            dock.refresh()
-        elif self.dock is not None:
-            self.dock.hide()
+            dialog = self._ensure_dialog()
+            dialog.show()
+            dialog.raise_()
+            dialog.activateWindow()
+            dialog.refresh()
+        elif self.dialog is not None:
+            self.dialog.hide()
 
-    def _on_dock_visibility(self, visible):
-        # Keep the toolbar button in sync when the dock is closed with its X button.
-        # Ignore "hidden" while it is merely a non-current tab of a tabified dock area.
-        if not visible and self.dock is not None and not self.dock.isHidden():
-            return
+    def _on_dialog_closed(self, *args):
+        # Keep the toolbar button in sync when the window is closed with its X button or Esc
         self.action.blockSignals(True)
-        self.action.setChecked(visible)
+        self.action.setChecked(False)
         self.action.blockSignals(False)
 
     def unload(self):
-        if self.dock is not None:
-            self.dock.disconnect_all()
-            self.iface.removeDockWidget(self.dock)
-            self.dock.deleteLater()
-            self.dock = None
+        if self.dialog is not None:
+            self.dialog.disconnect_all()
+            self.dialog.hide()
+            self.dialog.deleteLater()
+            self.dialog = None
         if self.action is not None:
             self.iface.removePluginMenu(PLUGIN_NAME, self.action)
             self.iface.removeToolBarIcon(self.action)

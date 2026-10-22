@@ -19,18 +19,18 @@ Works with QGIS 3.16+ and QGIS 4 (Qt6).
 ## Use
 
 Click the toolbar button (or *Plugins ▸ Theme Compare ▸ Compare Map Themes*).
-A dock opens with two pickers, **A** and **B**. Each lists
+A window opens with two theme pickers (marked red and blue). Each lists
 *Current map view (unsaved)* plus every map theme of the project.
 
 The tree mirrors the Layers panel:
 
-| Column     | Meaning |
+| Column | Meaning |
 |------------|---------|
 | Layer      | Layer or group name |
-| A / B      | `Visible`, `Hidden`, or `Hidden (group)` (checked but a parent group is off) |
+| (theme names) | `Visible`, `Hidden`, or `Hidden (group)` (checked but a parent group is off). Long names are shortened with "…"; hover for the full name. |
 | Difference | What differs, or `Same` |
 
-Row colors: red = visible only in A, blue = visible only in B, amber = other
+Row colors: red = only in the first theme, blue = only in the second theme, amber = other
 difference (style, legend classes, check state, expanded state).
 
 ### Features
@@ -39,10 +39,10 @@ difference (style, legend classes, check state, expanded state).
 - Optional comparison of **named styles**, **legend classes** (categories / rules switched on),
   **check state** and **expanded/collapsed state** (⚙ menu).
 - **Only differences** filter and a text filter.
-- **Swap** A and B; **apply** either theme to the map with one click.
-- **Save the current map view as a theme** right from the dock.
+- **Swap** the two themes; **apply** either theme to the map with one click.
+- **Save the current map view as a theme** right from the window.
 - **Right click** a row (multi-select works) to show it in the Layers panel, zoom to it, or
-  **copy its state from A to B** (or B to A) to reconcile two themes.
+  **copy its state from one theme to the other** to reconcile two themes.
 - **Copy to clipboard** (tab separated, pastes into Excel) or **export to CSV**.
 - Refreshes automatically when themes or the Layers panel change (can be turned off).
 

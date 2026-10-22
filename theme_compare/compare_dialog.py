@@ -1,14 +1,15 @@
-"""Dock widget that compares two map themes."""
+"""Window that compares two map themes."""
 
 import csv
+import os
 
-from qgis.PyQt.QtCore import Qt, QTimer
+from qgis.PyQt.QtCore import QEvent, Qt, QTimer
 from qgis.PyQt.QtGui import QBrush, QColor, QGuiApplication
 from qgis.PyQt.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
     QComboBox,
-    QDockWidget,
+    QDialog,
     QFileDialog,
     QGridLayout,
     QHBoxLayout,
@@ -22,7 +23,6 @@ from qgis.PyQt.QtWidgets import (
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
-    QWidget,
 )
 from qgis.core import QgsApplication, QgsMapThemeCollection, QgsProject, QgsSettings
 
@@ -33,10 +33,16 @@ CURRENT_LABEL = "Current map view (unsaved)"
 
 COL_NAME, COL_A, COL_B, COL_DIFF = range(4)
 
+# Pixel width theme names are elided to inside sentences
+NAME_WIDTH = 180
+
 # Translucent so they work with light and dark UI themes
 COLOR_ONLY_A = QColor(230, 80, 60, 70)
 COLOR_ONLY_B = QColor(40, 140, 230, 70)
 COLOR_OTHER = QColor(240, 180, 30, 70)
+CSS_A = "rgba(230,80,60,90)"
+CSS_B = "rgba(40,140,230,90)"
+CSS_OTHER = "rgba(240,180,30,90)"
 
 
 def _icon(name):
@@ -51,12 +57,24 @@ def _layer_icon(layer):
         return _icon("/mIconLayer.png")
 
 
-class ThemeCompareDock(QDockWidget):
+def _html(text):
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+class ThemeCompareDialog(QDialog):
 
     def __init__(self, iface, parent=None):
-        super().__init__("Theme Compare", parent)
+        super().__init__(parent)
         self.iface = iface
-        self.setObjectName("ThemeCompareDock")
+        self.setObjectName("ThemeCompareDialog")
+        self.setWindowTitle("Theme Compare")
+        # A normal top level window: closable and maximizable, but no minimize button
+        self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.WindowTitleHint
+                            | Qt.WindowType.WindowSystemMenuHint | Qt.WindowType.WindowMaximizeButtonHint
+                            | Qt.WindowType.WindowCloseButtonHint)
+        self.setModal(False)
+        self.resize(640, 700)
+
         self._result = None
         self._connected_collection = None
         self._connected_root = None
@@ -75,9 +93,8 @@ class ThemeCompareDock(QDockWidget):
     # ------------------------------------------------------------------ UI
 
     def _build_ui(self):
-        w = QWidget(self)
-        lay = QVBoxLayout(w)
-        lay.setContentsMargins(4, 4, 4, 4)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(6, 6, 6, 6)
 
         grid = QGridLayout()
         grid.setColumnStretch(1, 1)
@@ -87,28 +104,29 @@ class ThemeCompareDock(QDockWidget):
             combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
             combo.setMinimumContentsLength(12)
             combo.currentIndexChanged.connect(self._on_selection_changed)
-        self.combo_a.setToolTip("First theme to compare (shown as 'A')")
-        self.combo_b.setToolTip("Second theme to compare (shown as 'B')")
+        self.combo_a.setToolTip("First theme to compare (red)")
+        self.combo_b.setToolTip("Second theme to compare (blue)")
 
-        lbl_a = QLabel("<b>A</b>")
-        lbl_b = QLabel("<b>B</b>")
-        lbl_a.setStyleSheet("background: rgba(230,80,60,90); padding: 2px 6px; border-radius: 3px;")
-        lbl_b.setStyleSheet("background: rgba(40,140,230,90); padding: 2px 6px; border-radius: 3px;")
+        swatch_a = QLabel()
+        swatch_b = QLabel()
+        for swatch, css in ((swatch_a, CSS_A), (swatch_b, CSS_B)):
+            swatch.setFixedSize(14, 14)
+            swatch.setStyleSheet("background: {}; border-radius: 3px;".format(css))
 
-        self.btn_apply_a = self._tool_button("/mActionShowAllLayers.svg", "Apply theme A to the map",
+        self.btn_apply_a = self._tool_button("/mActionShowAllLayers.svg", "Apply this theme to the map",
                                              lambda: self.apply_theme(self.combo_a))
-        self.btn_apply_b = self._tool_button("/mActionShowAllLayers.svg", "Apply theme B to the map",
+        self.btn_apply_b = self._tool_button("/mActionShowAllLayers.svg", "Apply this theme to the map",
                                              lambda: self.apply_theme(self.combo_b))
-        self.btn_swap = self._tool_button("/mActionReload.svg", "Swap A and B", self.swap)
+        self.btn_swap = self._tool_button("/mActionReload.svg", "Swap the two themes", self.swap)
         self.btn_swap.setText("⇅")
         self.btn_swap.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
         self.btn_swap.setStyleSheet("font-size: 18px; font-weight: bold;")
 
-        grid.addWidget(lbl_a, 0, 0)
+        grid.addWidget(swatch_a, 0, 0)
         grid.addWidget(self.combo_a, 0, 1)
         grid.addWidget(self.btn_apply_a, 0, 2)
         grid.addWidget(self.btn_swap, 0, 3, 2, 1)
-        grid.addWidget(lbl_b, 1, 0)
+        grid.addWidget(swatch_b, 1, 0)
         grid.addWidget(self.combo_b, 1, 1)
         grid.addWidget(self.btn_apply_b, 1, 2)
         lay.addLayout(grid)
@@ -173,31 +191,26 @@ class ThemeCompareDock(QDockWidget):
 
         self.tree = QTreeWidget()
         self.tree.setColumnCount(4)
-        self.tree.setHeaderLabels(["Layer", "A", "B", "Difference"])
+        self.tree.setHeaderLabels(["Layer", "", "", "Difference"])
         self.tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        self.tree.setAlternatingRowColors(False)
         self.tree.setUniformRowHeights(True)
         self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._context_menu)
         self.tree.itemDoubleClicked.connect(self._on_double_click)
         header = self.tree.header()
         header.setStretchLastSection(True)
-        header.setSectionResizeMode(COL_NAME, QHeaderView.ResizeMode.Interactive)
-        header.setSectionResizeMode(COL_A, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(COL_B, QHeaderView.ResizeMode.ResizeToContents)
-        self.tree.setColumnWidth(COL_NAME, 200)
+        for col in (COL_NAME, COL_A, COL_B):
+            header.setSectionResizeMode(col, QHeaderView.ResizeMode.Interactive)
+        self.tree.setColumnWidth(COL_NAME, 220)
+        self.tree.setColumnWidth(COL_A, 130)
+        self.tree.setColumnWidth(COL_B, 130)
+        header.sectionResized.connect(self._update_headers)
         lay.addWidget(self.tree, 1)
 
-        legend = QLabel(
-            "<span style='background: rgba(230,80,60,90)'>&nbsp;&nbsp;&nbsp;</span> visible only in A &nbsp; "
-            "<span style='background: rgba(40,140,230,90)'>&nbsp;&nbsp;&nbsp;</span> visible only in B &nbsp; "
-            "<span style='background: rgba(240,180,30,90)'>&nbsp;&nbsp;&nbsp;</span> other difference"
-        )
-        legend.setTextFormat(Qt.TextFormat.RichText)
-        legend.setWordWrap(True)
-        lay.addWidget(legend)
-
-        self.setWidget(w)
+        self.legend = QLabel()
+        self.legend.setTextFormat(Qt.TextFormat.RichText)
+        self.legend.setWordWrap(True)
+        lay.addWidget(self.legend)
 
     def _tool_button(self, icon, tip, slot):
         b = QToolButton()
@@ -206,6 +219,24 @@ class ThemeCompareDock(QDockWidget):
         b.setAutoRaise(True)
         b.clicked.connect(slot)
         return b
+
+    # -------------------------------------------------------------- names
+
+    def _elide(self, text, width=NAME_WIDTH):
+        return self.fontMetrics().elidedText(text, Qt.TextElideMode.ElideRight, width)
+
+    def _name(self, combo, width=NAME_WIDTH):
+        """Theme name shown in texts, elided with "…" when too long."""
+        key = combo.currentData()
+        return self._elide(tl.display_name(key), width) if key is not None else ""
+
+    def _update_headers(self, *args):
+        header_item = self.tree.headerItem()
+        for col, combo in ((COL_A, self.combo_a), (COL_B, self.combo_b)):
+            full = tl.display_name(combo.currentData()) if combo.currentData() is not None else ""
+            # leave room for the header padding / sort indicator
+            header_item.setText(col, self._elide(full, max(self.tree.columnWidth(col) - 16, 20)))
+            header_item.setToolTip(col, full)
 
     # ------------------------------------------------------------ settings
 
@@ -224,6 +255,9 @@ class ThemeCompareDock(QDockWidget):
         self.act_auto.blockSignals(True)
         self.act_auto.setChecked(s.value(SETTINGS_PREFIX + "auto_refresh", True, type=bool))
         self.act_auto.blockSignals(False)
+        geometry = s.value(SETTINGS_PREFIX + "geometry")
+        if geometry:
+            self.restoreGeometry(geometry)
 
     def _save_settings(self):
         s = QgsSettings()
@@ -238,6 +272,17 @@ class ThemeCompareDock(QDockWidget):
 
     def categories(self):
         return [cat for cat, act in self.category_actions.items() if act.isChecked()]
+
+    def hideEvent(self, event):
+        QgsSettings().setValue(SETTINGS_PREFIX + "geometry", self.saveGeometry())
+        super().hideEvent(event)
+
+    def changeEvent(self, event):
+        # No minimize button, but the window manager may still minimize (e.g. Win+Down)
+        if event.type() == QEvent.Type.WindowStateChange and self.windowState() & Qt.WindowState.WindowMinimized:
+            QTimer.singleShot(0, lambda: self.setWindowState(
+                self.windowState() & ~Qt.WindowState.WindowMinimized))
+        super().changeEvent(event)
 
     # ------------------------------------------------------ project wiring
 
@@ -336,8 +381,6 @@ class ThemeCompareDock(QDockWidget):
                 combo.setProperty("pending_theme", new)
 
     def _on_tree_changed(self, *args):
-        # The live layer tree only matters when a side shows the current view,
-        # but a rename/added layer also changes the rows shown for themes.
         if self.act_auto.isChecked() and self.isVisible():
             self._schedule_refresh()
 
@@ -359,7 +402,7 @@ class ThemeCompareDock(QDockWidget):
             combo.setProperty("pending_theme", None)
             prev.append(pending or combo.currentData())
         if prev[0] == prev[1] == tl.CURRENT_STATE:
-            prev[1] = None  # nothing useful selected yet: pick a theme for B once one exists
+            prev[1] = None  # nothing useful selected yet: pick a theme for the second side once one exists
 
         for combo in (self.combo_a, self.combo_b):
             combo.blockSignals(True)
@@ -369,6 +412,7 @@ class ThemeCompareDock(QDockWidget):
                 combo.insertSeparator(1)
             for name in themes:
                 combo.addItem(_icon("/mActionShowPresets.svg"), name, name)
+                combo.setItemData(combo.count() - 1, name, Qt.ItemDataRole.ToolTipRole)
             combo.blockSignals(False)
 
         defaults = [tl.CURRENT_STATE, themes[0] if themes else tl.CURRENT_STATE]
@@ -387,12 +431,12 @@ class ThemeCompareDock(QDockWidget):
         self.refresh()
 
     def _update_buttons(self):
-        self.btn_apply_a.setEnabled(self.combo_a.currentData() != tl.CURRENT_STATE)
-        self.btn_apply_b.setEnabled(self.combo_b.currentData() != tl.CURRENT_STATE)
-
-    def _side_label(self, combo):
-        key = combo.currentData()
-        return "current view" if key == tl.CURRENT_STATE else "'{}'".format(key)
+        for combo, btn in ((self.combo_a, self.btn_apply_a), (self.combo_b, self.btn_apply_b)):
+            key = combo.currentData()
+            btn.setEnabled(key != tl.CURRENT_STATE)
+            btn.setToolTip("Apply theme '{}' to the map".format(key) if key != tl.CURRENT_STATE
+                           else "The current view is already shown on the map")
+        self._update_headers()
 
     def swap(self):
         ia, ib = self.combo_a.currentIndex(), self.combo_b.currentIndex()
@@ -412,13 +456,10 @@ class ThemeCompareDock(QDockWidget):
             return
         try:
             self._result = tl.compare_themes(project, project.layerTreeRoot(), self._layer_tree_model(),
-                                             key_a, key_b, "A", "B")
+                                             key_a, key_b, self._name(self.combo_a), self._name(self.combo_b))
         except KeyError:
             self._result = None
         self._populate_tree()
-
-    def _visible_categories(self):
-        return self.categories()
 
     def _row_matches_filter(self, node, text):
         return not text or text in node.name.lower()
@@ -427,16 +468,18 @@ class ThemeCompareDock(QDockWidget):
         tree = self.tree
         expanded = self._expanded_paths()
         first_fill = tree.topLevelItemCount() == 0
-        selected = {id_ for id_ in self._selected_keys()}
+        selected = set(self._selected_keys())
         tree.setUpdatesEnabled(False)
         tree.clear()
         result = self._result
-        cats = self._visible_categories()
+        cats = self.categories()
         only_diff = self.chk_only_diff.isChecked()
         text = self.search.text().strip().lower()
+        self._update_headers()
 
         if result is None:
             self.summary.setText("<i>Select two themes to compare.</i>")
+            self.legend.clear()
             tree.setUpdatesEnabled(True)
             return
 
@@ -462,7 +505,7 @@ class ThemeCompareDock(QDockWidget):
             if key in selected:
                 item.setSelected(True)
             if node.kind == "group":
-                item.setExpanded(first_fill or text or key in expanded or only_diff)
+                item.setExpanded(first_fill or bool(text) or key in expanded or only_diff)
 
         for child in result.children:
             add(child, None)
@@ -547,24 +590,27 @@ class ThemeCompareDock(QDockWidget):
 
     def _update_summary(self, result, cats):
         c = tl.summarize(result, cats)
-        name_a, name_b = self._side_label(self.combo_a), self._side_label(self.combo_b)
+        name_a = _html(self._name(self.combo_a))
+        name_b = _html(self._name(self.combo_b))
+        chip = "<span style='background: {}'>&nbsp;{}&nbsp;</span>"
+        self.legend.setText(" &nbsp; ".join([
+            chip.format(CSS_A, "&nbsp;") + " only in <b>{}</b>".format(name_a),
+            chip.format(CSS_B, "&nbsp;") + " only in <b>{}</b>".format(name_b),
+            chip.format(CSS_OTHER, "&nbsp;") + " other difference",
+        ]))
         same_theme = self.combo_a.currentData() == self.combo_b.currentData()
         if c["layers"] == 0:
             self.summary.setText("<i>The project has no layers.</i>")
             return
-        parts = [
-            "<b>A</b> = {}, <b>B</b> = {}".format(name_a, name_b),
-        ]
+        parts = ["Comparing <b>{}</b> with <b>{}</b>".format(name_a, name_b)]
         if same_theme:
             parts.append("<i>Both sides show the same theme.</i>")
-        stats = []
-        stats.append("<span style='background: rgba(230,80,60,90)'>&nbsp;{} only in A&nbsp;</span>"
-                     .format(c["only_a"]))
-        stats.append("<span style='background: rgba(40,140,230,90)'>&nbsp;{} only in B&nbsp;</span>"
-                     .format(c["only_b"]))
+        stats = [
+            chip.format(CSS_A, "{} only in {}".format(c["only_a"], name_a)),
+            chip.format(CSS_B, "{} only in {}".format(c["only_b"], name_b)),
+        ]
         if c["other"]:
-            stats.append("<span style='background: rgba(240,180,30,90)'>&nbsp;{} with other differences"
-                         "&nbsp;</span>".format(c["other"]))
+            stats.append(chip.format(CSS_OTHER, "{} with other differences".format(c["other"])))
         stats.append("{} visible in both, {} hidden in both".format(c["same_visible"], c["same_hidden"]))
         if c["groups_diff"]:
             stats.append("{} group(s) differ".format(c["groups_diff"]))
@@ -643,11 +689,12 @@ class ThemeCompareDock(QDockWidget):
             act.triggered.connect(lambda: self.zoom_to_layer(node))
         menu.addSeparator()
         key_a, key_b = self.combo_a.currentData(), self.combo_b.currentData()
-        what = "{} item(s)".format(len(nodes)) if len(nodes) > 1 else "'{}'".format(node.name)
-        act = menu.addAction("Copy State of {} from A to B".format(what))
+        name_a, name_b = self._name(self.combo_a, 140), self._name(self.combo_b, 140)
+        what = "{} items".format(len(nodes)) if len(nodes) > 1 else "'{}'".format(self._elide(node.name, 160))
+        act = menu.addAction("Copy State of {} from {} to {}".format(what, name_a, name_b))
         act.setEnabled(key_b != tl.CURRENT_STATE and key_a != key_b)
         act.triggered.connect(lambda: self.copy_state(nodes, self.combo_a, self.combo_b))
-        act = menu.addAction("Copy State of {} from B to A".format(what))
+        act = menu.addAction("Copy State of {} from {} to {}".format(what, name_b, name_a))
         act.setEnabled(key_a != tl.CURRENT_STATE and key_a != key_b)
         act.triggered.connect(lambda: self.copy_state(nodes, self.combo_b, self.combo_a))
         if tl.CURRENT_STATE in (key_a, key_b):
@@ -714,7 +761,7 @@ class ThemeCompareDock(QDockWidget):
     # ------------------------------------------------------------ export
 
     def _rows(self, only_shown=True):
-        """Rows for export: (path, name, type, A, B, difference)."""
+        """Rows for export: (path, name, type, state 1, state 2, difference)."""
         cats = self.categories()
         rows = []
 
@@ -737,8 +784,8 @@ class ThemeCompareDock(QDockWidget):
 
     def _header(self):
         return ["Group", "Name", "Type",
-                "A ({})".format(self.combo_a.currentText()),
-                "B ({})".format(self.combo_b.currentText()),
+                tl.display_name(self.combo_a.currentData()),
+                tl.display_name(self.combo_b.currentData()),
                 "Difference"]
 
     def copy_to_clipboard(self):
@@ -748,11 +795,12 @@ class ThemeCompareDock(QDockWidget):
         self.iface.messageBar().pushInfo("Theme Compare", "Copied {} row(s) to the clipboard".format(len(rows)))
 
     def export_csv(self):
-        a = self.combo_a.currentText().replace("/", "_")
-        b = self.combo_b.currentText().replace("/", "_")
+        def safe(key):
+            return "".join(ch if ch.isalnum() or ch in " -_" else "_" for ch in tl.display_name(key))
+        a, b = safe(self.combo_a.currentData()), safe(self.combo_b.currentData())
         last_dir = QgsSettings().value(SETTINGS_PREFIX + "last_dir", "")
-        default = "{}/theme_compare_{}_vs_{}.csv".format(last_dir, a, b) if last_dir else \
-            "theme_compare_{}_vs_{}.csv".format(a, b)
+        filename = "theme_compare_{}_vs_{}.csv".format(a, b)
+        default = os.path.join(last_dir, filename) if last_dir else filename
         path, _ = QFileDialog.getSaveFileName(self, "Export Comparison", default, "CSV files (*.csv)")
         if not path:
             return
@@ -766,6 +814,5 @@ class ThemeCompareDock(QDockWidget):
         except OSError as e:
             QMessageBox.warning(self, "Theme Compare", "Could not write file:\n{}".format(e))
             return
-        import os
         QgsSettings().setValue(SETTINGS_PREFIX + "last_dir", os.path.dirname(path))
         self.iface.messageBar().pushSuccess("Theme Compare", "Exported comparison to {}".format(path))
