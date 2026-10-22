@@ -3,7 +3,7 @@
 import csv
 import os
 
-from qgis.PyQt.QtCore import QEvent, Qt, QTimer
+from qgis.PyQt.QtCore import QEvent, QPoint, QRect, Qt, QTimer
 from qgis.PyQt.QtGui import QBrush, QColor, QGuiApplication
 from qgis.PyQt.QtWidgets import (
     QAbstractItemView,
@@ -73,7 +73,6 @@ class ThemeCompareDialog(QDialog):
                             | Qt.WindowType.WindowSystemMenuHint | Qt.WindowType.WindowMaximizeButtonHint
                             | Qt.WindowType.WindowCloseButtonHint)
         self.setModal(False)
-        self.resize(640, 700)
 
         self._result = None
         self._connected_collection = None
@@ -85,8 +84,16 @@ class ThemeCompareDialog(QDialog):
         self._refresh_timer.setInterval(250)
         self._refresh_timer.timeout.connect(self.refresh)
 
+        # Save the window geometry shortly after it was moved/resized, so it
+        # survives even when QGIS is closed without hiding this window first
+        self._geometry_timer = QTimer(self)
+        self._geometry_timer.setSingleShot(True)
+        self._geometry_timer.setInterval(500)
+        self._geometry_timer.timeout.connect(self.save_window_geometry)
+
         self._build_ui()
         self._load_settings()
+        self.restore_window_geometry()
         self._connect_project()
         self.reload_themes()
 
@@ -255,9 +262,6 @@ class ThemeCompareDialog(QDialog):
         self.act_auto.blockSignals(True)
         self.act_auto.setChecked(s.value(SETTINGS_PREFIX + "auto_refresh", True, type=bool))
         self.act_auto.blockSignals(False)
-        geometry = s.value(SETTINGS_PREFIX + "geometry")
-        if geometry:
-            self.restoreGeometry(geometry)
 
     def _save_settings(self):
         s = QgsSettings()
@@ -273,8 +277,120 @@ class ThemeCompareDialog(QDialog):
     def categories(self):
         return [cat for cat, act in self.category_actions.items() if act.isChecked()]
 
+    # ------------------------------------------------------ window geometry
+
+    def _screen(self):
+        screen = self.screen() if hasattr(self, "screen") else None  # QWidget.screen() is Qt >= 5.14
+        return screen or QGuiApplication.screenAt(self.geometry().center()) or QGuiApplication.primaryScreen()
+
+    def save_window_geometry(self, force=False):
+        """Store position, size, maximized state and the monitor the window is on."""
+        if not force and not self.isVisible():
+            return
+        maximized = bool(self.windowState() & Qt.WindowState.WindowMaximized)
+        rect = self.normalGeometry() if maximized else self.geometry()
+        if not rect.isValid():
+            return
+        screen = self._screen()
+        avail = screen.availableGeometry()
+        s = QgsSettings()
+        key = SETTINGS_PREFIX + "window/"
+        s.setValue(key + "rect", [rect.x(), rect.y(), rect.width(), rect.height()])
+        s.setValue(key + "maximized", maximized)
+        s.setValue(key + "screen_name", screen.name())
+        s.setValue(key + "screen_rect", [avail.x(), avail.y(), avail.width(), avail.height()])
+        s.setValue(key + "title_height", max(self.geometry().y() - self.frameGeometry().y(), 0))
+
+    def _default_rect(self):
+        """Default size, centered over the QGIS main window."""
+        parent = self.iface.mainWindow()
+        rect = QRect(0, 0, 640, 700)
+        rect.moveCenter(parent.geometry().center() if parent is not None else
+                        QGuiApplication.primaryScreen().availableGeometry().center())
+        return rect
+
+    @staticmethod
+    def _to_rect(value):
+        try:
+            values = [int(float(v)) for v in value]
+        except (TypeError, ValueError):
+            return None
+        return QRect(*values) if len(values) == 4 else None
+
+    def restore_window_geometry(self):
+        """Restore the saved geometry, adapted to the monitors that exist now.
+
+        - same monitor, same resolution: exact position and size
+        - same monitor, other resolution: same relative position, scaled
+          down when it no longer fits
+        - monitor gone: centered on the monitor QGIS is on
+        In all cases the window is kept fully on screen (including its title bar).
+        """
+        s = QgsSettings()
+        s.remove(SETTINGS_PREFIX + "geometry")  # Qt geometry blob used by 1.1.0
+        key = SETTINGS_PREFIX + "window/"
+        rect = self._to_rect(s.value(key + "rect"))
+        old_avail = self._to_rect(s.value(key + "screen_rect"))
+        screen_name = s.value(key + "screen_name", "")
+        maximized = s.value(key + "maximized", False, type=bool)
+        title_h = s.value(key + "title_height", 30, type=int) or 30
+
+        screens = QGuiApplication.screens()
+        screen = next((sc for sc in screens if screen_name and sc.name() == screen_name), None)
+        if rect is None or not rect.isValid():
+            rect = self._default_rect()
+            screen = QGuiApplication.screenAt(rect.center())
+        elif screen is None:
+            # The monitor is gone (or was renamed): use the one QGIS is on
+            main = self.iface.mainWindow()
+            screen = QGuiApplication.screenAt(main.geometry().center()) if main is not None else None
+            screen = screen or QGuiApplication.primaryScreen()
+            rect.moveCenter(screen.availableGeometry().center())
+        elif old_avail is not None and old_avail.isValid() and old_avail != screen.availableGeometry():
+            # Same monitor, different resolution / arrangement: keep the relative position
+            avail = screen.availableGeometry()
+            rel_x = (rect.center().x() - old_avail.x()) / old_avail.width()
+            rel_y = (rect.center().y() - old_avail.y()) / old_avail.height()
+            rect.moveCenter(QPoint(avail.x() + round(rel_x * avail.width()),
+                                   avail.y() + round(rel_y * avail.height())))
+        screen = screen or QGuiApplication.primaryScreen()
+
+        rect = self._fit_to_screen(rect, screen.availableGeometry(), title_h)
+        self.setGeometry(rect)
+        if maximized:
+            self.setWindowState(self.windowState() | Qt.WindowState.WindowMaximized)
+
+    def _fit_to_screen(self, rect, avail, title_h):
+        """Shrink and move rect so the window, title bar included, is on screen."""
+        frame = 8  # approximate border width
+        usable = avail.adjusted(frame, title_h, -frame, -frame)
+        min_size = self.minimumSizeHint()
+        width = max(min(rect.width(), usable.width()), min(min_size.width(), usable.width()))
+        height = max(min(rect.height(), usable.height()), min(min_size.height(), usable.height()))
+        rect = QRect(rect.x(), rect.y(), width, height)
+        if rect.right() > usable.right():
+            rect.moveRight(usable.right())
+        if rect.bottom() > usable.bottom():
+            rect.moveBottom(usable.bottom())
+        if rect.left() < usable.left():
+            rect.moveLeft(usable.left())
+        if rect.top() < usable.top():
+            rect.moveTop(usable.top())
+        return rect
+
+    def moveEvent(self, event):
+        super().moveEvent(event)
+        if self.isVisible():
+            self._geometry_timer.start()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self.isVisible():
+            self._geometry_timer.start()
+
     def hideEvent(self, event):
-        QgsSettings().setValue(SETTINGS_PREFIX + "geometry", self.saveGeometry())
+        self._geometry_timer.stop()
+        self.save_window_geometry(force=True)  # isVisible() is already False here
         super().hideEvent(event)
 
     def changeEvent(self, event):

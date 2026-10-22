@@ -45,6 +45,7 @@ difference (style, legend classes, check state, expanded state).
   **copy its state from one theme to the other** to reconcile two themes.
 - **Copy to clipboard** (tab separated, pastes into Excel) or **export to CSV**.
 - Refreshes automatically when themes or the Layers panel change (can be turned off).
+- Remembers the window position, size, maximized state and monitor. If that monitor is gone or its resolution changed, the window is moved and resized to stay fully on screen.
 
 ## License
 
